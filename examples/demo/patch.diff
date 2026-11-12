@@ -1,0 +1,20 @@
+diff --git a/work.py b/work.py
+index 22756da..1594a70 100644
+--- a/work.py
++++ b/work.py
+@@ -2,7 +2,6 @@ import time
+ 
+ 
+ def stage_a():
+-    time.sleep(0.12)
+     return "a"
+ 
+ 
+@@ -15,7 +14,6 @@ def joiner():
+ 
+ 
+ def stage_b():
+-    time.sleep(0.08)
+     return "b"
+ 
+ 
