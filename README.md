@@ -45,7 +45,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[test]"
 .venv/bin/python -m pytest -q          # 8 passed
 ```
 
-Requires Python ≥ 3.9 and a git checkout (git must be on PATH). No third-party
+Requires Python ≥ 3.10 (developed and tested on 3.12) and a git checkout (git must be on PATH). No third-party
 runtime dependencies.
 
 ## Library use
