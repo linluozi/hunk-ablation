@@ -7,7 +7,9 @@ each hunk's marginal saving plus the unexplained residual.  Version 1.1 adds
 overlap.  Version 1.2 adds **automatic grouping**: a subset that crashes (a hunk
 that uses a name another hunk defines, say) is folded into an indivisible block
 and the exact Shapley game is run over blocks, with every failing subset printed
-rather than hidden.
+rather than hidden.  Version 1.3 makes that partition **exact**: it returns the
+maximum number of blocks (a Bell-number search over all set partitions, up to
+8 hunks), so the attribution is as fine as runnability allows.
 
 Most "X is 1.8× faster" claims come from a patch with three changes. This tool
 answers the question a reviewer actually asks: *which of those three earned the
@@ -42,20 +44,21 @@ largest interaction exceeds 5% of the total.
 The shipped `examples/interaction/` fixture is a real, deterministic check of
 that failure: `time.sleep(0.2)` runs unless *both* `FLAG_A` and `FLAG_B` are
 set, so each hunk alone saves nothing and together they save 0.2 s.  Measured
-by the tool (`--shapley`, 2 repeats per subset, ground truth known):
+by the tool (`--shapley`, 3 repeats per subset, ground truth known):
 
 ```text
 $ hunkablation --repo . --patch examples/interaction/patch.diff \
                --apply-cwd examples/interaction \
                --bench-cmd ".venv/bin/python examples/interaction/bench.py" \
                --shapley --repeats 3
-conditions 4  baseline 0.200082s  patched 0.000001s  total saving 0.200081s  drift 0.000002s
-   0 work.py                   +0.200085   100.0  +0.100041      50.0 -0.100044
-   1 work.py                   +0.200084   100.0  +0.100040      50.0 -0.100044
+conditions 4  baseline 0.200093s  patched 0.000001s  total saving 0.200092s  drift 0.000009s
+  block       hunks path                        LOO s   LOO %  Shapley s Shapley %   shift s
+      0         [0] work.py                 +0.200091   100.0  +0.100049      50.0 -0.100042
+      1         [1] work.py                 +0.200085   100.0  +0.100043      50.0 -0.100042
 efficiency residual +0.000000s (Shapley parts must sum to the total)
-LOO sum 0.400169s = 200.0% of total  error +0.200088s
-  interaction hunk 0 x 1: +0.200088s (+100.0% of total)
-VERDICT: LOO shares are misleading - max |interaction| 0.200088s exceeds 5% ...
+LOO sum 0.400176s = 200.0% of total  error +0.200084s
+  interaction block 0 x 1: +0.200084s (+100.0% of total)
+VERDICT: LOO shares are misleading - max |interaction| 0.200084s exceeds 5% ...
 ```
 
 The fixture's two hunks are *perfectly synergistic* by construction (a `sleep`
@@ -94,9 +97,11 @@ LOO sum 0.121924s = 89.3% of total  error -0.014536s
 VERDICT: LOO shares are misleading - max |interaction| 0.010465s exceeds 5% ...
 ```
 
-A second run (`--repeats 2`) gave `62.5 / 35.3 / 2.2 %`, so the share of the tiny
-third block sits inside the noise floor (drift 0.002-0.004 s, 2-3 % of the total
-saving); the ordering and the additivity verdict are stable across runs.  Block
+A second run (`--repeats 2`) gave `62.5 / 35.3 / 2.2 %`, and independent re-runs
+put the tiny third block anywhere from `-3.2 %` to `+4.1 %`: that block is inside
+the noise floor (drift 0.002-0.005 s, 2-4 % of the total saving).  The ordering
+`[0,1] > [2] > [3]` and the `additivity_violated` verdict are stable across all
+runs.  Block
 `[0,1]` is the fast first-character dispatch plus its whitespace predicate (the
 hunks that define and use the tables), block `[2]` the identifier-regex fast
 path, block `[3]` the compiled-pattern `.sub` in the string reader.  LOO never
@@ -139,7 +144,7 @@ builds a one-hunk patch per hunk and applies it with `git apply -R`.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[test]"
-.venv/bin/python -m pytest -q          # 8 passed
+.venv/bin/python -m pytest -q          # 21 passed
 ```
 
 Requires Python ≥ 3.10 (developed and tested on 3.12) and a git checkout (git must be on PATH). No third-party
@@ -171,7 +176,7 @@ for h in res["hunks"]:
 
 ## Tested
 
-`python -m pytest -q` → **19 passed**:
+`python -m pytest -q` → **21 passed**:
 
 * patch splitting on the shipped two-hunk example, plus a rejection test for a
   non-patch;
@@ -197,7 +202,10 @@ for h in res["hunks"]:
   are reported, 3 hunks are grouped into `[[0,1],[2]]`, and Shapley recovers
   0.20 s / 0.04 s of a 0.24 s saving;
 * `--no-group` still aborts on that fixture with the failing subset, and
-  `--json` carries `blocks` and `failed_conditions`.
+  `--json` carries `blocks` and `failed_conditions`;
+* the exact search beats the greedy merge on a case where three hunks are folded
+  by greedy but `[[0,1],[2]]` is sound, reproduces the js-beautify coupling
+  pattern `[[0,1],[2],[3]]`, and returns `None` when the full set fails.
 
 ## Limits
 
@@ -206,7 +214,9 @@ for h in res["hunks"]:
   into blocks, but it cannot split a block that provably has to move together.
 * Grouping is derived from *runnability*, not from a static dependency analysis:
   hunks that happen to run apart are kept apart even if they are conceptually
-  related, and the partition is sound but not claimed to be the finest.
+  related.  The partition is the **exact finest** one (maximum block count) for
+  `n <= 8`, which covers the 6-hunk Shapley limit; beyond that a greedy sound
+  fallback is used.
 * Stale compiled artifacts invalidate the measurement. The demo deletes
   `__pycache__` before importing the patched module; **any** benchmark that
   imports patched code must do the same (a same-size, same-second edit can reuse
@@ -214,21 +224,30 @@ for h in res["hunks"]:
   `examples/demo/bench.py`).
 * Noise floor: run with `--repeats` high enough that the median is stable; the
   tool reports raw seconds only and does not compute confidence intervals.
+* **Run on an otherwise idle host.**  While verifying v1.3.0 we ran the
+  js-beautify example concurrently with another CPU-heavy job and the same patch
+  that measured 1.16x on an idle machine reported a *negative* saving
+  (`baseline 1.0332 s, patched 1.0555 s`).  The structural grouping
+  (`[[0,1],[2],[3]]`, four failing subsets) was still correct; only the timing
+  was garbage.  Never quote an attribution number measured under load.
+
+## 本轮创新（v1.3）
+
+**B 档（v1.3 增补）**：把分组从「sound 贪心」升级成「**精确最细划分**」——枚举全部集合划分
+（n ≤ 8，Bell(8)=4140），取「每个块并集都能运行」中块数最多者，同块数取字典序最小。
+贪心在 `failing={0b110}` 上会把 3 个 hunk 折成 1 块，精确搜索给出同样 sound 的
+`[[0,1],[2]]`，多出一个可归因单元；在真实 js-beautify 4-hunk 补丁上两者都给出
+`[[0,1],[2],[3]]`。台账无「按可运行性求最细划分」的先例。
 
 ## 本轮创新（v1.2）
 
 **B 档（v1.2 增补）**：把「不可独立运行的 hunk」从 v1.1 的**拒绝**推进成**自动分组 + 组级精确 Shapley**。
-v1.1 在真实 4-hunk js-beautify 补丁上只会报 `NameError` 然后放弃；v1.2 用失败子集
-反推「最小不可分块」（把失败子集与它的最小可运行超集合并，直到没有任何失败子集是整块的并集），
-把 4 个 hunk 归成 3 块，并给出组级 Shapley 份额 62.5% / 35.3% / 2.2%（LOO 份额
-60.3% / 34.0% / 3.7%，块 0×块 1 交互 −6.8% 触发 `additivity_violated`）。此前台账没有任何
-「按可运行性自动分组后再做 Shapley」的做法，也没有「分组不可行时显式拒绝」的证书。
-
-**B 档（v1.1）**：把归因从留一法（LOO）推进到**精确 Shapley**（2^n 全子集），
-并把「hunk 之间不可独立回退/不可独立运行」从静默错误变成显式拒绝：在真实 4-hunk
-补丁上实测到 hunk 0/1 的结构耦合（`NameError: _EXTRA_WHITESPACE`），因此该补丁的
-子集归因无定义，工具不产出数字。此前台账的归因只做单 hunk 回退，未检查子集可运行性，
-也没有量化 LOO 在协同 hunk 上可报出 200% 的份额。
+v1.1 在真实 4-hunk js-beautify 补丁上只会报 `NameError` 然后放弃；v1.2 用失败子集反推
+「最小不可分块」（把失败子集与它的最小可运行超集合并，直到没有任何失败子集是整块的并集），
+把 4 个 hunk 归成 3 块，组级 Shapley 份额 **61.1% / 34.8% / 4.1%**（`--repeats 3`；LOO
+57.1 / 31.9 / 0.4，块间交互 −6.1 / −7.7 / −5.4% 触发 `additivity_violated`；`--repeats 2`
+复测为 62.5 / 35.3 / 2.2）。此前台账没有任何「按可运行性自动分组后再做 Shapley」的做法，
+也没有「分组不可行时显式拒绝」的证书。
 
 ## 本轮创新（v1.1，历史）
 

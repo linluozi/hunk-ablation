@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from hunkablation import attribute, derive_blocks, is_clean, minimal_failing_sets
+from hunkablation import (attribute, derive_blocks, derive_blocks_exact, is_clean,
+                          minimal_failing_sets)
 from hunkablation.shapley import analyse, interactions, shapley
 
 INTERACTION = Path(__file__).resolve().parent.parent / "examples" / "interaction"
@@ -197,3 +198,28 @@ def test_cli_json_reports_blocks(tmp_path):
     assert payload["grouped"] is True
     assert [b["hunks"] for b in payload["blocks"]] == [[0, 1], [2]]
     assert payload["failed_conditions"]
+
+
+def test_derive_blocks_is_exact_and_at_least_as_fine_as_greedy():
+    from hunkablation.shapley import _derive_blocks_greedy
+    # {1,2} crash together: greedy folds all three hunks, but [[0,1],[2]] is
+    # also sound and buys an extra attribution unit, so the exact search wins.
+    failing = {0b110}
+    assert _derive_blocks_greedy(failing, 3) == [[0, 1, 2]]
+    assert derive_blocks(failing, 3) == [[0, 1], [2]]
+    # the js-beautify coupling pattern: hunk 1 needs hunk 0, hunks 2 and 3 free
+    jsb = {0b0010, 0b0110, 0b1010, 0b1110}
+    assert derive_blocks_exact(jsb, 4) == [[0, 1], [2], [3]]
+    assert derive_blocks_exact(set(), 4) == [[0], [1], [2], [3]]
+    assert derive_blocks_exact({0b111}, 3) is None
+    assert derive_blocks_exact(set(), 0) == []
+
+
+def test_exact_partition_is_sound_on_the_coupled_fixture(tmp_path):
+    repo = make_coupled_repo(tmp_path)
+    res = attribute(repo, (COUPLED / "patch.diff").read_text(),
+                    f"{sys.executable} bench.py", repeats=2, mode="shapley")
+    # exact search must not loosen the grouping the fixture needs
+    assert [b["hunks"] for b in res["blocks"]] == [[0, 1], [2]]
+    assert res["shapley"]["efficiency_residual_seconds"] == pytest.approx(0.0, abs=0.03)
+    assert is_clean(repo)

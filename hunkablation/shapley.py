@@ -75,7 +75,7 @@ def minimal_failing_sets(failing) -> list[int]:
     return out
 
 
-def derive_blocks(failing, n: int) -> list[list[int]] | None:
+def _derive_blocks_greedy(failing, n: int) -> list[list[int]] | None:
     """Partition ``n`` hunks so that **every union of blocks runs**.
 
     ``failing`` is the set of masks whose benchmark did not run (the subset was
@@ -150,6 +150,74 @@ def derive_blocks(failing, n: int) -> list[list[int]] | None:
         if not merged:
             return blocks
     return None
+
+
+def _all_partitions(n: int):
+    """Yield every set partition of ``range(n)`` (restricted-growth order)."""
+    blocks: list[list[int]] = []
+
+    def rec(i: int):
+        if i == n:
+            yield [list(b) for b in blocks]
+            return
+        for block in blocks:
+            block.append(i)
+            yield from rec(i + 1)
+            block.pop()
+        blocks.append([i])
+        yield from rec(i + 1)
+        blocks.pop()
+
+    yield from rec(0)
+
+
+def derive_blocks_exact(failing, n: int) -> list[list[int]] | None:
+    """The **finest** sound partition: most blocks, lexicographic tie-break.
+
+    Enumerates every set partition of the ``n`` hunks (Bell(6) = 203; Bell(8) =
+    4140) and keeps the one with the most blocks whose every block-union is
+    runnable.  The greedy merge in ``_derive_blocks_greedy`` is sound but can be
+    coarser: for ``failing = {0b110}`` it folds all three hunks together, while
+    ``[[0, 1], [2]]`` is also sound and yields an extra attribution unit.
+    Returns ``None`` when the full set itself fails.
+    """
+    if n == 0:
+        return []
+    if (1 << n) - 1 in failing:
+        return None
+    best: list[list[int]] | None = None
+    for blocks in _all_partitions(n):
+        if best is not None and len(blocks) < len(best):
+            continue
+        sound = True
+        for bm in range(1 << len(blocks)):
+            mask = 0
+            for bi, block in enumerate(blocks):
+                if bm >> bi & 1:
+                    for i in block:
+                        mask |= 1 << i
+            if mask in failing:
+                sound = False
+                break
+        if not sound:
+            continue
+        cand = [sorted(b) for b in blocks]
+        if best is None or len(cand) > len(best) or (len(cand) == len(best)
+                                                     and cand < best):
+            best = cand
+    return best
+
+
+def derive_blocks(failing, n: int, exact_limit: int = 8) -> list[list[int]] | None:
+    """Exact finest partition for ``n <= exact_limit``, greedy sound one beyond.
+
+    ``--shapley`` refuses more than 6 hunks, so the exact path always covers the
+    configurations the tool can actually measure; the greedy fallback only keeps
+    the helper usable for larger direct callers.
+    """
+    if n <= exact_limit:
+        return derive_blocks_exact(failing, n)
+    return _derive_blocks_greedy(failing, n)
 
 
 def analyse(times: dict[int, float], n: int, threshold: float = 0.05) -> dict:
