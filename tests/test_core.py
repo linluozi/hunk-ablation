@@ -91,4 +91,4 @@ def test_cli_json_output(tmp_path):
 
 
 def test_version():
-    assert hunkablation.__version__ == "1.0.0"
+    assert hunkablation.__version__ == "1.1.0"

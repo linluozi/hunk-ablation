@@ -1,0 +1,21 @@
+diff --git a/work.py b/work.py
+index 1111111..2222222 100644
+--- a/work.py
++++ b/work.py
+@@ -1,6 +1,6 @@
+ import time
+ 
+-FLAG_A = False
++FLAG_A = True
+ 
+ 
+ def stage():
+@@ -10,7 +10,7 @@ def stage():
+     return "x"
+ 
+ 
+-FLAG_B = False
++FLAG_B = True
+ 
+ 
+ def run():
