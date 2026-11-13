@@ -42,10 +42,22 @@ set, so each hunk alone saves nothing and together they save 0.2 s.  Measured
 by the tool (`--shapley`, 2 repeats per subset, ground truth known):
 
 ```text
-LOO      +0.2001s / +0.2001s   (sum 200.1% of the total)
-Shapley  +0.1000s / +0.1000s   (efficiency residual 0.000000s)
-interaction +0.2001s           VERDICT: LOO shares are misleading
+$ hunkablation --repo . --patch examples/interaction/patch.diff \
+               --apply-cwd examples/interaction \
+               --bench-cmd ".venv/bin/python examples/interaction/bench.py" \
+               --shapley --repeats 3
+conditions 4  baseline 0.200082s  patched 0.000001s  total saving 0.200081s  drift 0.000002s
+   0 work.py                   +0.200085   100.0  +0.100041      50.0 -0.100044
+   1 work.py                   +0.200084   100.0  +0.100040      50.0 -0.100044
+efficiency residual +0.000000s (Shapley parts must sum to the total)
+LOO sum 0.400169s = 200.0% of total  error +0.200088s
+  interaction hunk 0 x 1: +0.200088s (+100.0% of total)
+VERDICT: LOO shares are misleading - max |interaction| 0.200088s exceeds 5% ...
 ```
+
+The fixture's two hunks are *perfectly synergistic* by construction (a `sleep`
+guarded by `FLAG_A and FLAG_B`), so this checks the arithmetic, not a library's
+speed.  The numbers above are from this machine (CPython 3.12.3).
 
 ### What a real patch taught us: hunks that cannot run apart
 
@@ -92,6 +104,10 @@ builds a one-hunk patch per hunk and applies it with `git apply -R`.
   `unrevertible` instead of silently skipped.
 * `--shapley` needs a runnable program for every subset; a subset that crashes
   aborts the run with the subset and the stderr tail (no numbers are invented).
+* A patch that changes no tracked file is rejected: `git apply` run inside a
+  subdirectory of a checkout prefixes the paths and silently skips them (exit
+  0, no change), which would otherwise produce a "0.000x" measurement.  Pass
+  the repository root plus `--apply-cwd`.
 
 ## Install
 

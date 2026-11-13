@@ -290,6 +290,12 @@ def attribute(repo: Path, patch: str, bench_cmd: str, repeats: int = 5, *,
         baseline = measure(bench_cmd, repo, repeats, timeout)
         apply(repo, patch, strip=strip, cwd=apply_cwd)
         applied = True
+        if _git(repo, ["diff", "--quiet"]).returncode == 0:
+            raise PatchError(
+                "the patch changed no tracked file: git apply skipped it. When "
+                "--repo is a subdirectory of a git checkout, git prefixes the "
+                "paths and silently skips them; pass the repository root and use "
+                "--apply-cwd for the subdirectory.")
         patched = measure(bench_cmd, repo, repeats, timeout)
         result["baseline_seconds"] = baseline
         result["patched_seconds"] = patched
