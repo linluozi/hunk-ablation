@@ -189,6 +189,11 @@ def _ablate_loo(repo: Path, hunks: list[Hunk], bench_cmd: str, repeats: int,
             continue
         try:
             t = measure(bench_cmd, repo, repeats, timeout)
+        except RuntimeError as exc:
+            result["unrevertible"].append({
+                "index": hunk.index,
+                "error": f"the tree without this hunk does not run: {exc}"})
+            continue
         finally:
             apply(repo, hunk.as_patch(), strip=strip, cwd=cwd)
         saving = t - patched
@@ -203,51 +208,110 @@ def _ablate_loo(repo: Path, hunks: list[Hunk], bench_cmd: str, repeats: int,
 
 def _ablate_shapley(repo: Path, hunks: list[Hunk], bench_cmd: str, repeats: int,
                     result: dict, strip: int, cwd: str, timeout: float,
-                    baseline: float, patched: float, threshold: float) -> None:
-    from .shapley import analyse
+                    baseline: float, patched: float, threshold: float,
+                    group: bool = True) -> None:
+    from .shapley import analyse, derive_blocks
 
     n = len(hunks)
     full = (1 << n) - 1
     times: dict[int, float] = {}
     samples: dict[int, list[float]] = {}
+    failing: dict[int, str] = {}
     current = full
     for mask in range(1 << n):
         try:
-            t, raw, current = _measure_subset(repo, hunks, mask, current, bench_cmd,
-                                              repeats, strip, cwd, timeout)
+            current = _set_subset(repo, hunks, mask, current, strip, cwd)
+        except PatchError as exc:
+            failing[mask] = f"git apply failed: {exc}"
+            _git(repo, ["checkout", "--", "."])
+            current = 0
+            continue
+        try:
+            raw = measure_raw(bench_cmd, repo, repeats, timeout)
         except RuntimeError as exc:
-            names = [hunks[i].index for i in range(n) if mask >> i & 1]
-            raise RuntimeError(
-                f"subset {mask} (hunks {names} applied) does not run: {exc}. "
-                "Hunks that cannot run apart are not independently attributable; "
-                "exclude them with --only-hunks or group them.") from exc
-        times[mask] = t
+            failing[mask] = str(exc)
+            continue
+        times[mask] = statistics.median(raw)
         samples[mask] = raw
+    if 0 not in times:
+        raise RuntimeError("the clean tree does not run; there is no baseline to attribute")
+    blocked = [{"mask": mask,
+                "hunks": [hunks[i].index for i in range(n) if mask >> i & 1],
+                "error": failing[mask]}
+               for mask in sorted(failing)]
+    if failing and not group:
+        raise RuntimeError(
+            "subsets do not run: "
+            + "; ".join(f"{b['mask']} (hunks {b['hunks']}): {b['error'][:120]}"
+                        for b in blocked)
+            + ". Hunks that cannot run apart are not independently attributable; "
+              "pass --only-hunks to narrow, or drop --no-group to let the tool "
+              "group them into indivisible blocks.")
+    blocks = derive_blocks(set(failing), n)
+    if blocks is None:
+        raise RuntimeError(
+            "no sound hunk partition exists: the fully patched tree failed to run "
+            f"({failing.get(full, 'unknown')[:160]})")
+    block_of: dict[int, int] = {}
+    for bi, block in enumerate(blocks):
+        for i in block:
+            block_of[i] = bi
+    m = len(blocks)
+    remap: dict[int, float] = {}
+    for bm in range(1 << m):
+        mask = 0
+        for bi, block in enumerate(blocks):
+            if bm >> bi & 1:
+                for i in block:
+                    mask |= 1 << i
+        if mask not in times:
+            raise RuntimeError(
+                f"internal: block union {bm} maps to hunk mask {mask}, which did "
+                "not run; refusing to attribute")
+        remap[bm] = times[mask]
     # Re-measure the empty subset at the end: the gap is drift, not
     # attribution, and a reader is entitled to see it.
     drift_zero, _, current = _measure_subset(repo, hunks, 0, current, bench_cmd,
                                              repeats, strip, cwd, timeout)
     _set_subset(repo, hunks, full, current, strip, cwd)
-    total = baseline - patched
-    analysis = analyse(times, n, threshold)
+    analysis = analyse(remap, m, threshold)
     result["baseline_seconds"] = times[0]
     result["patched_seconds"] = times[full]
     result["total_savings_seconds"] = analysis["total_savings_seconds"]
     result["drift_seconds"] = abs(times[0] - drift_zero)
     result["samples_seconds"] = {str(k): v for k, v in samples.items()}
     result["conditions"] = len(times)
-    for i, hunk in enumerate(hunks):
-        loo = analysis["loo_seconds"][i]
-        phi = analysis["shapley_seconds"][i]
-        result["hunks"].append(hunk.to_dict() | {
-            "savings_seconds": loo,
-            "share_pct": (100.0 * loo / total) if total else None,
-            "shapley_seconds": phi,
-            "shapley_share_pct": (100.0 * phi / total) if total else None,
-            "loo_shift_seconds": phi - loo,
+    result["block_conditions"] = 1 << m
+    result["grouped"] = len(blocks) < n
+    result["blocks"] = [
+        {"id": bi, "hunks": list(block),
+         "paths": sorted({hunks[i].path for i in block}),
+         "headers": [hunks[i].header for i in block],
+         "shapley_seconds": analysis["shapley_seconds"][bi],
+         "shapley_share_pct": (100.0 * analysis["shapley_seconds"][bi]
+                               / analysis["total_savings_seconds"])
+         if analysis["total_savings_seconds"] else None,
+         "loo_seconds": analysis["loo_seconds"][bi],
+         "share_pct": (100.0 * analysis["loo_seconds"][bi]
+                       / analysis["total_savings_seconds"])
+         if analysis["total_savings_seconds"] else None}
+        for bi, block in enumerate(blocks)]
+    result["failed_conditions"] = blocked
+    for bi, block in enumerate(blocks):
+        rep = hunks[block[0]]
+        result["hunks"].append(rep.to_dict() | {
+            "members": list(block),
+            "savings_seconds": analysis["loo_seconds"][bi],
+            "share_pct": result["blocks"][bi]["share_pct"],
+            "shapley_seconds": analysis["shapley_seconds"][bi],
+            "shapley_share_pct": result["blocks"][bi]["shapley_share_pct"],
+            "loo_shift_seconds": (analysis["shapley_seconds"][bi]
+                                  - analysis["loo_seconds"][bi]),
         })
     result["explained_savings_seconds"] = analysis["loo_sum_seconds"]
-    result["explained_pct"] = (100.0 * analysis["loo_sum_seconds"] / total) if total else None
+    result["explained_pct"] = (100.0 * analysis["loo_sum_seconds"]
+                               / analysis["total_savings_seconds"]) \
+        if analysis["total_savings_seconds"] else None
     result["residual_seconds"] = analysis["loo_error_seconds"]
     result["shapley"] = analysis
 
@@ -255,7 +319,7 @@ def _ablate_shapley(repo: Path, hunks: list[Hunk], bench_cmd: str, repeats: int,
 def attribute(repo: Path, patch: str, bench_cmd: str, repeats: int = 5, *,
               strip: int = 1, apply_cwd: str = ".", only_path: str | None = None,
               only_hunks: list[int] | None = None,
-              mode: str = "loo", threshold: float = 0.05,
+              mode: str = "loo", threshold: float = 0.05, group: bool = True,
               timeout: float = 600.0) -> dict:
     """Measure the patch's saving and attribute it to its hunks.
 
@@ -265,6 +329,12 @@ def attribute(repo: Path, patch: str, bench_cmd: str, repeats: int = 5, *,
     ``strip``/``apply_cwd`` are passed to ``git apply``; ``only_path`` restricts
     attribution to hunks whose path contains that substring (the rest stay part
     of the measured patch and land in the residual).
+
+    In Shapley mode, subsets whose benchmark crashes (a hunk that uses a name
+    another hunk defines, for instance) are *not* timed.  ``group=True`` derives
+    the finest sound partition of hunks into indivisible blocks and runs the
+    Shapley game over blocks; ``group=False`` restores the old behaviour of
+    aborting with the failing subset.
     """
     repo = Path(repo)
     if mode not in ("loo", "shapley"):
@@ -305,7 +375,8 @@ def attribute(repo: Path, patch: str, bench_cmd: str, repeats: int = 5, *,
                         apply_cwd, timeout, baseline, patched)
         else:
             _ablate_shapley(repo, selected, bench_cmd, repeats, result, strip,
-                            apply_cwd, timeout, baseline, patched, threshold)
+                            apply_cwd, timeout, baseline, patched, threshold,
+                            group)
     finally:
         if applied:
             try:

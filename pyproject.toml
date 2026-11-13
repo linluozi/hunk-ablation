@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hunkablation"
-version = "1.1.0"
+version = "1.2.0"
 description = "Attribute a performance patch's measured saving to its individual hunks"
 readme = "README.md"
 requires-python = ">=3.10"

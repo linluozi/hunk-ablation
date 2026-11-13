@@ -61,6 +61,97 @@ def interactions(values: dict[int, float], n: int) -> list[dict]:
     return out
 
 
+def minimal_failing_sets(failing) -> list[int]:
+    """Inclusion-minimal masks among the subsets whose benchmark did not run.
+
+    A failing mask is minimal when no *other* failing mask is a subset of it;
+    every failing mask therefore contains at least one minimal one.  These are
+    the smallest coalitions that are genuinely indivisible.
+    """
+    out: list[int] = []
+    for mask in sorted(failing, key=lambda m: (m.bit_count(), m)):
+        if not any((k & mask) == k for k in out):
+            out.append(mask)
+    return out
+
+
+def derive_blocks(failing, n: int) -> list[list[int]] | None:
+    """Partition ``n`` hunks so that **every union of blocks runs**.
+
+    ``failing`` is the set of masks whose benchmark did not run (the subset was
+    applied and the program crashed, or `git apply` refused it).  A mask that is
+    a union of whole blocks is one of the configurations the block-level Shapley
+    game must measure, so no such mask may fail.  The loop repeatedly finds the
+    smallest failing block-union and merges it with its smallest *runnable*
+    superset, until no failing mask is a union of blocks any more.
+
+    Returns the list of blocks (sorted hunk indices), or ``None`` when the fully
+    patched tree itself fails (nothing can be measured at all).  The result is a
+    sound partition, not provably the finest one; a merger is only forced when a
+    failing subset would otherwise be a legal configuration.
+    """
+    if n == 0:
+        return []
+    full = (1 << n) - 1
+    if full in failing:
+        return None
+
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    def blocks_of() -> list[list[int]]:
+        groups: dict[int, list[int]] = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(i)
+        return [sorted(groups[k]) for k in sorted(groups)]
+
+    def is_union_of_blocks(mask: int, blocks: list[list[int]]) -> bool:
+        for block in blocks:
+            bits = 0
+            for i in block:
+                bits |= 1 << i
+            if mask & bits not in (0, bits):
+                return False
+        return True
+
+    for _ in range(n):
+        blocks = blocks_of()
+        merged = False
+        for mask in sorted(failing, key=lambda m: (m.bit_count(), m)):
+            if not is_union_of_blocks(mask, blocks):
+                continue
+            # ``mask`` is a legal block configuration and it crashed.  Fold it
+            # together with the smallest runnable superset so that the failing
+            # coalition can never again be a union of whole blocks.
+            supersets = [s for s in range(1 << n)
+                         if s not in failing and (s & mask) == mask]
+            if not supersets:
+                return None
+            best = min(supersets, key=lambda s: (s.bit_count(), s))
+            inside = [i for i in range(n) if (mask >> i) & 1]
+            outside = [i for i in range(n) if (best >> i) & 1 and not (mask >> i) & 1]
+            if not inside or not outside:
+                return None
+            anchor = inside[0]
+            for i in inside[1:] + outside:
+                union(anchor, i)
+            merged = True
+            break
+        if not merged:
+            return blocks
+    return None
+
+
 def analyse(times: dict[int, float], n: int, threshold: float = 0.05) -> dict:
     """Shapley values, LOO marginals, and the additivity verdict.
 

@@ -31,12 +31,20 @@ def _print_shapley(res: dict) -> None:
     print(f"conditions {res['conditions']}  baseline {res['baseline_seconds']:.6f}s  "
           f"patched {res['patched_seconds']:.6f}s  total saving {total:.6f}s  "
           f"drift {res['drift_seconds']:.6f}s")
-    print(f"  {'hunk':>4} {'path':24} {'LOO s':>10} {'LOO %':>7} "
+    for f in res.get("failed_conditions", []):
+        print(f"  subset {f['mask']} (hunks {f['hunks']}) does not run: "
+              f"{f['error'][:140]}")
+    if res.get("grouped"):
+        print(f"grouped {res['selected_hunks']} hunks into {len(res['blocks'])} "
+              f"indivisible blocks (a failing union forces a merge)")
+    print(f"  {'block':>5} {'hunks':>11} {'path':22} {'LOO s':>10} {'LOO %':>7} "
           f"{'Shapley s':>10} {'Shapley %':>9} {'shift s':>9}")
     for h in res["hunks"]:
+        members = h.get("members", [h["index"]])
+        label = f"[{','.join(str(x) for x in members)}]"
         loo_pct = "-" if h["share_pct"] is None else f"{h['share_pct']:.1f}"
         sha_pct = "-" if h["shapley_share_pct"] is None else f"{h['shapley_share_pct']:.1f}"
-        print(f"  {h['index']:>4} {h['path']:24} {h['savings_seconds']:+10.6f} "
+        print(f"  {h['index']:>5} {label:>11} {h['path']:22} {h['savings_seconds']:+10.6f} "
               f"{loo_pct:>7} {h['shapley_seconds']:+10.6f} {sha_pct:>9} "
               f"{h['loo_shift_seconds']:+9.6f}")
     print(f"efficiency residual {sh['efficiency_residual_seconds']:+.6f}s "
@@ -46,7 +54,7 @@ def _print_shapley(res: dict) -> None:
           f"error {sh['loo_error_seconds']:+.6f}s")
     for p in sh["interaction"]:
         if abs(p["interaction_pct_of_total"]) >= 1.0:
-            print(f"  interaction hunk {p['i']} x {p['j']}: "
+            print(f"  interaction block {p['i']} x {p['j']}: "
                   f"{p['interaction_seconds']:+.6f}s "
                   f"({p['interaction_pct_of_total']:+.1f}% of total)")
     if sh["additivity_violated"]:
@@ -54,7 +62,7 @@ def _print_shapley(res: dict) -> None:
               f"{sh['max_abs_interaction_seconds']:.6f}s exceeds "
               f"{sh['threshold'] * 100:.0f}% of the total saving; report Shapley values.")
     else:
-        print("VERDICT: hunks are additive within the threshold; LOO shares are usable.")
+        print("VERDICT: blocks are additive within the threshold; LOO shares are usable.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="subdirectory of --repo where the patch applies")
     ap.add_argument("--threshold", type=float, default=0.05,
                     help="max |interaction| / total saving before LOO is called misleading")
+    ap.add_argument("--no-group", action="store_true",
+                    help="abort when a subset cannot run instead of grouping coupled hunks")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     try:
@@ -85,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                         only_hunks=([int(x) for x in args.only_hunks.split(",")]
                                     if args.only_hunks else None),
                         mode="shapley" if args.shapley else "loo",
-                        threshold=args.threshold)
+                        threshold=args.threshold, group=not args.no_group)
     except (PatchError, DirtyTree, RuntimeError, ValueError) as exc:
         sys.stderr.write(f"hunkablation: {exc}\n")
         return 2

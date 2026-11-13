@@ -1,0 +1,38 @@
+diff --git a/lookup.py b/lookup.py
+index 7fd8dc3..118e498 100644
+--- a/lookup.py
++++ b/lookup.py
+@@ -1,7 +1,6 @@
+ import time
+-from table import build
++from table import build, _TABLE
+ 
+ 
+ def lookup(key):
+-    time.sleep(0.15)
+-    return key
++    return _TABLE[key]
+diff --git a/table.py b/table.py
+index 8869c0c..627641b 100644
+--- a/table.py
++++ b/table.py
+@@ -1,6 +1,7 @@
+ import time
+ 
++_TABLE = {"a": 1}
++
+ 
+ def build():
+-    time.sleep(0.05)
+-    return {"a": 1}
++    return _TABLE
+diff --git a/tail.py b/tail.py
+index 4f6f79e..7fc99af 100644
+--- a/tail.py
++++ b/tail.py
+@@ -2,5 +2,4 @@ import time
+ 
+ 
+ def tail():
+-    time.sleep(0.04)
+     return "t"
